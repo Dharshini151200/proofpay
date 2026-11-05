@@ -66,7 +66,7 @@
         <td><input data-g="summary" value="${esc(d.summary)}"></td>
         <td style="width:90px">${d.fileId ? `<a href="/f/${d.fileId}" target="_blank">View</a>` : `<label class="linkbtn" style="margin:0;color:var(--acc);cursor:pointer">Attach<input type="file" accept="image/*,application/pdf" data-up="${esc(d.id)}" style="display:none"></label>`}</td>
         <td><button class="x" data-act="deldoc">×</button></td></tr>`).join('')}</tbody></table>
-      <div class="drop" id="drop">Drop a PO, challan or invoice file here (PDF or photo), or <u>browse</u><input type="file" id="fileinp" accept="image/*,application/pdf" style="display:none"></div>
+      <div class="drop" id="drop">Drop the PO, challan and invoice here, several at once is fine (PDF or photo, up to 5 MB each), or <u>browse</u><input type="file" id="fileinp" multiple accept="image/*,application/pdf" style="display:none"></div>
       <label style="margin-top:14px">Notes<textarea data-k="notes" rows="2">${esc(r.notes)}</textarea></label>
       <p class="saving" id="saving"></p>`;
     side();
@@ -102,14 +102,28 @@
   }
   const soon = () => { $('#saving').textContent = 'Editing…'; clearTimeout(timer); timer = setTimeout(save, 800); };
 
-  async function upload(file, docId) {
-    if (file.size > 5e6) return alert('Max 5 MB');
-    $('#saving').textContent = `Uploading ${file.name}…`;
+  const guessKind = (name) => /invoice|\binv\b|tax/i.test(name) ? 'Invoice' : /challan|pod|delivery|\bdc\b|dc-|grn|receipt/i.test(name) ? (/grn/i.test(name) ? 'GRN' : 'POD')
+    : /e-?way/i.test(name) ? 'E-way bill' : /\bpo\b|po-|purchase|order/i.test(name) ? 'PO' : 'Other';
+
+  // Upload one or many files. Each file is matched to an existing document row of the same type that has no file yet
+  // (e.g. the PO/Invoice/POD rows Claude created); otherwise a new document row is added.
+  async function uploadMany(fileList, forcedDocId) {
+    const files = [...fileList];
+    if (!files.length) return;
     if (timer) await save();
-    const kind = /invoice|inv/i.test(file.name) ? 'Invoice' : /challan|pod|delivery|dc/i.test(file.name) ? 'POD' : /po|order/i.test(file.name) ? 'PO' : 'Other';
-    const res = await fetch(`/api/records/${r.id}/files?name=${encodeURIComponent(file.name)}&kind=${kind}${docId ? `&doc=${docId}` : ''}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream' }, body: file });
-    if (!res.ok) { $('#saving').textContent = (await res.json().catch(() => ({}))).error || 'Upload failed'; return; }
-    r = await res.json(); render(); $('#saving').textContent = 'Attached ✓';
+    let done = 0, failed = [];
+    for (const file of files) {
+      $('#saving').textContent = `Uploading ${done + 1} of ${files.length}: ${file.name}…`;
+      if (file.size > 5e6) { failed.push(`${file.name} (over 5 MB)`); continue; }
+      const kind = guessKind(file.name);
+      const target = forcedDocId || r.documents.find((d) => d.kind === kind && !d.fileId)?.id;
+      const res = await fetch(`/api/records/${r.id}/files?name=${encodeURIComponent(file.name)}&kind=${encodeURIComponent(kind)}${target ? `&doc=${target}` : ''}`,
+        { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream' }, body: file });
+      if (!res.ok) { failed.push(`${file.name} (${(await res.json().catch(() => ({}))).error || 'failed'})`); continue; }
+      r = await res.json(); done++; forcedDocId = null;
+    }
+    render();
+    $('#saving').textContent = `Attached ${done} file${done === 1 ? '' : 's'} ✓${failed.length ? ` · Not attached: ${failed.join(', ')}` : ''}`;
   }
 
   document.addEventListener('input', (e) => {
@@ -123,8 +137,8 @@
     side(); soon();
   });
   document.addEventListener('change', (e) => {
-    if (e.target.dataset.up !== undefined && e.target.files[0]) upload(e.target.files[0], e.target.dataset.up);
-    if (e.target.id === 'fileinp' && e.target.files[0]) upload(e.target.files[0]);
+    if (e.target.dataset.up !== undefined && e.target.files.length) uploadMany(e.target.files, e.target.dataset.up);
+    if (e.target.id === 'fileinp' && e.target.files.length) { uploadMany(e.target.files); e.target.value = ''; }
   });
   document.addEventListener('click', async (e) => {
     const el = e.target, tr = el.closest('tr');
@@ -139,7 +153,7 @@
   });
   document.addEventListener('dragover', (e) => { const d = e.target.closest?.('#drop'); if (d) { e.preventDefault(); d.classList.add('over'); } });
   document.addEventListener('dragleave', (e) => { e.target.closest?.('#drop')?.classList.remove('over'); });
-  document.addEventListener('drop', (e) => { const d = e.target.closest?.('#drop'); if (d) { e.preventDefault(); d.classList.remove('over'); if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); } });
+  document.addEventListener('drop', (e) => { const d = e.target.closest?.('#drop'); if (d) { e.preventDefault(); d.classList.remove('over'); if (e.dataTransfer.files.length) uploadMany(e.dataTransfer.files); } });
   document.addEventListener('submit', async (e) => {
     if (e.target.id !== 'payform') return; e.preventDefault();
     const fdata = Object.fromEntries(new FormData(e.target));
