@@ -1,0 +1,24 @@
+# One-click deploy on Render: New → Blueprint → pick this repo → Apply.
+services:
+  - type: web
+    name: proofpay
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DEMO_MCP_TOKEN
+        value: demo-volopay-2026
+      - key: DATABASE_URL
+        fromDatabase:
+          name: proofpay-db
+          property: connectionString
+
+databases:
+  - name: proofpay-db
+    plan: free
