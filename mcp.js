@@ -148,5 +148,26 @@ export function mountMcp(app, baseUrlOf) {
     catch (e) { console.error('MCP error', e); if (!res.headersSent) res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal error' }, id: null }); }
   });
   const no = (_q, res) => res.status(405).set('Allow', 'POST').json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed' }, id: null });
-  app.get('/mcp/:token', no); app.delete('/mcp/:token', no);
+  // Opened in a browser (e.g. a reviewer clicking the link): explain what it is instead of showing a raw protocol error.
+  app.get('/mcp/:token', async (req, res, next) => {
+    if (!String(req.get('accept') || '').includes('text/html')) return no(req, res);
+    try {
+      const ws = await store.get('workspaces', 'mcpToken', req.params.token);
+      const base = baseUrlOf(req), url = `${base}/mcp/${req.params.token}`;
+      const esc = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      res.status(ws ? 200 : 404).send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ProofPay MCP connector</title><link rel="stylesheet" href="/static/style.css"></head>
+<body class="public"><main class="paper">${ws ? `
+<p class="ok">✓ This ProofPay connector link is working, for ${esc(ws.profile.name)}.</p>
+<h1>Paste this link into Claude</h1>
+<p>This is an MCP link. It's meant for Claude, not for opening in a browser. Connect it in a minute:</p>
+<div class="copyline"><code id="u">${esc(url)}</code><button class="btn sm" onclick="navigator.clipboard.writeText(document.getElementById('u').textContent);this.textContent='Copied ✓'">Copy</button></div>
+<ol><li>In Claude (claude.ai or the desktop app), open <b>Settings → Connectors</b>.</li>
+<li>Click <b>Add custom connector</b>. Name: <b>ProofPay</b>. URL: the link above. Click <b>Add</b>.</li>
+<li>Start a <b>new chat</b>, open the <b>+</b> / tools menu and switch <b>ProofPay</b> on.</li>
+<li>Attach a PO, a signed delivery challan and an invoice, then say: <i>"Create a delivery record for PO-1045 and attach its invoice and POD."</i></li>
+<li>Open the app to see the record appear: <a href="${base}/login">${esc(base)}/login</a> (demo login is pre-filled).</li></ol>` : '<h1>This connector link is not valid.</h1><p>Copy the correct link from <b>Connect Claude & profile</b> in the ProofPay app.</p>'}
+<p class="foot muted small">ProofPay · no AI runs inside this app, your own Claude does the reading.</p></main></body></html>`);
+    } catch (e) { next(e); }
+  });
+  app.delete('/mcp/:token', no);
 }
