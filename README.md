@@ -49,6 +49,18 @@ Other things to ask Claude:
 | `add_followup` | Saves a reminder, formal notice or dispute reply that Claude drafted to the record |
 | `record_payment` | Logs a full or part payment |
 
+## Claude attaches the originals itself
+Every record has an upload link (`/u/<token>`). Claude can upload straight to it from its workspace, and the file bytes never pass through the chat:
+
+```
+POST /u/<token>/files?name=<file>&kind=<PO|Invoice|POD|E-way bill|GRN|Other>&ref=<document no.>&by=claude
+Content-Type: application/pdf   (or image/jpeg, image/png…; max 5 MB)
+<raw file bytes>
+```
+Each file is matched to its document row by `ref` (e.g. `DC-921`), then falls back to the first empty row of the same `kind`. `scripts/pp_upload.py <upload_link> file:kind:ref …` wraps this.
+
+On claude.ai, allow your app's domain (e.g. `proofpay-xxxx.onrender.com`) under **Settings → Capabilities**, or Claude's uploads are blocked.
+
 ## Run locally
 ```bash
 npm install

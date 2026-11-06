@@ -41,13 +41,18 @@ async function own(req, res) {
 }
 const OK_MIME = /^(image\/(png|jpeg|webp|gif|heic|heif)|application\/pdf)$/;
 // Attach one uploaded file to a record: fill the first document of the same type that has no file yet, else add a new document.
-async function attachFile(r, { name, mime, buffer, kind, docId }, by) {
+// Matching order: exact document id → same reference (e.g. "DC-921", ignoring case/punctuation) → first empty slot of the same type.
+const normRef = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+async function attachFile(r, { name, mime, buffer, kind, docId, ref }, by) {
   if (!OK_MIME.test(mime)) return { error: 'Only PDF or photo files' };
   if (!buffer?.length) return { error: 'Empty file' };
   const f = { id: id(), workspaceId: r.workspaceId, recordId: r.id, name: String(name || 'file').slice(0, 120), mime, data: buffer.toString('base64') };
   await store.save('files', f);
   const k = DOC_KINDS.includes(kind) ? kind : guessKind(f.name);
-  const doc = (docId && r.documents.find((d) => d.id === docId)) || r.documents.find((d) => d.kind === k && !d.fileId);
+  const nr = normRef(ref);
+  const doc = (docId && r.documents.find((d) => d.id === docId))
+    || (nr && r.documents.find((d) => normRef(d.reference) === nr && (!kind || d.kind === k)))
+    || r.documents.find((d) => d.kind === k && !d.fileId);
   if (doc) { doc.fileId = f.id; doc.fileName = f.name; }
   else r.documents.push({ id: id(6), kind: k, reference: f.name, date: '', summary: 'Original file uploaded', transcript: '', fileId: f.id, fileName: f.name });
   log(r, by, `Original file attached: ${f.name}${doc ? ` → ${doc.kind} ${doc.reference || ''}`.trimEnd() : ''}`);
@@ -121,7 +126,8 @@ async function byToken(req, res) {
 app.get('/u/:token', wrap(async (req, res) => { const { r, ws } = await byToken(req, res); if (r) res.send(V.uploadPage(ws, r)); }));
 app.post('/u/:token/files', express.raw({ type: '*/*', limit: '5mb' }), wrap(async (req, res) => {
   const { r } = await byToken(req, res); if (!r) return;
-  const out = await attachFile(r, { name: req.query.name, mime: String(req.get('content-type') || ''), buffer: req.body, kind: req.query.kind }, 'supplier');
+  const out = await attachFile(r, { name: req.query.name, mime: String(req.get('content-type') || ''), buffer: req.body, kind: req.query.kind, ref: req.query.ref },
+    req.query.by === 'claude' ? 'claude' : 'supplier');
   if (out.error) return res.status(415).json(out);
   res.json({ ok: true, documents: r.documents.map((d) => ({ kind: d.kind, reference: d.reference, attached: !!d.fileId, fileName: d.fileName })) });
 }));
