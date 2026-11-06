@@ -64,10 +64,13 @@ export function checks(r) {
   if (num(r.invoiceAmount) != null && t.invoiced && Math.abs(expected - num(r.invoiceAmount)) > 1)
     out.push({ level: 'warn', text: `Invoice total ${inr(r.invoiceAmount)} ≠ line items + GST (${inr(expected)})` });
   if (!out.length) out.push({ level: 'ok', text: 'PO, delivery and invoice match — dispute-ready' });
+  const pod = (r.documents || []).find((d) => d.kind === 'POD');
+  if (pod && !pod.fileId) out.push({ level: 'info', text: 'Original signed challan not attached yet. Add it with the upload link, since it is your strongest proof in a dispute' });
   return out;
 }
+export const issues = (r) => checks(r).filter((x) => x.level === 'bad' || x.level === 'warn');
 
-export const score = (r) => { const c = checks(r); return c[0].level === 'ok' ? 100 : Math.max(10, 100 - c.filter((x) => x.level === 'bad').length * 25 - c.filter((x) => x.level === 'warn').length * 10); };
+export const score = (r) => { const c = issues(r); return !c.length ? 100 : Math.max(10, 100 - c.filter((x) => x.level === 'bad').length * 25 - c.filter((x) => x.level === 'warn').length * 10); };
 
 function cleanItems(items) {
   return (items || []).filter((it) => it && String(it.description || '').trim()).map((it) => ({
@@ -77,9 +80,10 @@ function cleanItems(items) {
   }));
 }
 function cleanDocs(docs) {
-  return (docs || []).filter((d) => d && (d.reference || d.summary || d.fileId)).map((d) => ({
+  return (docs || []).filter((d) => d && (d.reference || d.summary || d.fileId || d.transcript)).map((d) => ({
     id: d.id || id(6), kind: DOC_KINDS.includes(d.kind) ? d.kind : 'Other', reference: String(d.reference || '').slice(0, 100),
-    date: String(d.date || '').slice(0, 10), summary: String(d.summary || '').slice(0, 1000), fileId: d.fileId || null, fileName: d.fileName || null,
+    date: String(d.date || '').slice(0, 10), summary: String(d.summary || '').slice(0, 1000),
+    transcript: String(d.transcript || '').slice(0, 12000), fileId: d.fileId || null, fileName: d.fileName || null,
   }));
 }
 
@@ -88,7 +92,7 @@ const FIELDS = ['poNumber', 'poDate', 'invoiceNumber', 'invoiceDate', 'deliveryD
 export async function createRecord(ws, a, by = 'supplier') {
   const now = new Date().toISOString();
   const r = {
-    id: id(), workspaceId: ws.id, slug: id(9), status: 'draft', createdBy: by, createdAt: now, updatedAt: now,
+    id: id(), workspaceId: ws.id, slug: id(9), uploadToken: id(12), status: 'draft', createdBy: by, createdAt: now, updatedAt: now,
     buyer: { name: String(a.buyer?.name || a.buyerName || '').slice(0, 200), gstin: String(a.buyer?.gstin || a.buyerGstin || '').slice(0, 20), contact: String(a.buyer?.contact || a.buyerContact || '').slice(0, 200) },
     poNumber: '', poDate: '', invoiceNumber: '', invoiceDate: '', deliveryDate: '', acceptedOn: '', receivedBy: '', notes: '',
     invoiceAmount: num(a.invoiceAmount), gstRate: num(a.gstRate) ?? 18,
@@ -131,12 +135,14 @@ export function addPayment(r, { amount, date, reference }, by) {
 }
 
 export function summary(r, base) {
-  const t = totals(r), d = dueInfo(r), c = checks(r);
+  const t = totals(r), d = dueInfo(r);
   return {
     po_number: r.poNumber, buyer: r.buyer.name, invoice_number: r.invoiceNumber, invoice_amount: inr(t.invoiceAmount),
     outstanding: inr(t.outstanding), status: r.status, payment_due: d.due, days_left: d.left ?? null, overdue: !!d.overdue,
-    match: c[0].level === 'ok' ? 'clean' : c.map((x) => x.text),
+    match: issues(r).length ? issues(r).map((x) => x.text) : 'clean',
+    original_files: (r.documents || []).map((d) => `${d.kind}: ${d.fileId ? 'attached' : 'not attached'}`),
     edit_url: `${base}/app/records/${r.id}`, buyer_link: `${base}/b/${r.slug}`,
+    upload_link: `${base}/u/${r.uploadToken}`,
   };
 }
 
@@ -145,3 +151,6 @@ export async function findByPo(ws, po) {
   return (await store.list('records', 'workspaceId', ws.id)).find((r) => norm(r.poNumber) === norm(po)) || null;
 }
 export { today, addDays, daysBetween };
+
+export const guessKind = (name) => (/invoice|\binv\b|tax/i.test(name) ? 'Invoice' : /grn/i.test(name) ? 'GRN' : /challan|pod|delivery|\bdc\b|dc-|receipt/i.test(name) ? 'POD'
+  : /e-?way/i.test(name) ? 'E-way bill' : /\bpo\b|po-|purchase|order/i.test(name) ? 'PO' : 'Other');

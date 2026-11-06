@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { store } from './store.js';
-import { id, hashPassword, checkPassword, createRecord, updateRecord, addPayment, log } from './domain.js';
+import { id, hashPassword, checkPassword, createRecord, updateRecord, addPayment, log, guessKind, DOC_KINDS } from './domain.js';
 import { mountMcp } from './mcp.js';
 import * as V from './views.js';
 import { seedDemo, DEMO } from './seed.js';
@@ -15,7 +15,7 @@ app.set('trust proxy', true);
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.use(cookieParser());
-const STATIC = { 'style.css': 'text/css', 'editor.js': 'text/javascript', 'dash.js': 'text/javascript' };
+const STATIC = { 'style.css': 'text/css', 'editor.js': 'text/javascript', 'dash.js': 'text/javascript', 'upload.js': 'text/javascript' };
 app.get('/static/:f', (req, res) => {
   const type = STATIC[req.params.f];
   if (!type) return res.sendStatus(404);
@@ -38,6 +38,22 @@ async function own(req, res) {
   const r = await store.get('records', 'id', req.params.id);
   if (!r || r.workspaceId !== req.ws.id) { res.status(404).json({ error: 'Not found' }); return null; }
   return r;
+}
+const OK_MIME = /^(image\/(png|jpeg|webp|gif|heic|heif)|application\/pdf)$/;
+// Attach one uploaded file to a record: fill the first document of the same type that has no file yet, else add a new document.
+async function attachFile(r, { name, mime, buffer, kind, docId }, by) {
+  if (!OK_MIME.test(mime)) return { error: 'Only PDF or photo files' };
+  if (!buffer?.length) return { error: 'Empty file' };
+  const f = { id: id(), workspaceId: r.workspaceId, recordId: r.id, name: String(name || 'file').slice(0, 120), mime, data: buffer.toString('base64') };
+  await store.save('files', f);
+  const k = DOC_KINDS.includes(kind) ? kind : guessKind(f.name);
+  const doc = (docId && r.documents.find((d) => d.id === docId)) || r.documents.find((d) => d.kind === k && !d.fileId);
+  if (doc) { doc.fileId = f.id; doc.fileName = f.name; }
+  else r.documents.push({ id: id(6), kind: k, reference: f.name, date: '', summary: 'Original file uploaded', transcript: '', fileId: f.id, fileName: f.name });
+  log(r, by, `Original file attached: ${f.name}${doc ? ` → ${doc.kind} ${doc.reference || ''}`.trimEnd() : ''}`);
+  r.updatedAt = new Date().toISOString();
+  await store.save('records', r);
+  return { ok: true };
 }
 async function fileMap(r) {
   const m = {};
@@ -96,6 +112,20 @@ app.get('/f/:fid', wrap(async (req, res) => {
   res.set('Content-Type', f.mime).set('Content-Disposition', `inline; filename="${encodeURIComponent(f.name)}"`).set('X-Content-Type-Options', 'nosniff').send(Buffer.from(f.data, 'base64'));
 }));
 
+// ---------- upload link (from Claude's reply; no login — the long random token is the key) ----------
+async function byToken(req, res) {
+  const r = req.params.token && req.params.token.length >= 12 ? await store.get('records', 'uploadToken', req.params.token) : null;
+  if (!r) { res.status(404).send(V.layout('Not found', '<h1>This upload link is not valid.</h1>')); return {}; }
+  return { r, ws: await store.get('workspaces', 'id', r.workspaceId) };
+}
+app.get('/u/:token', wrap(async (req, res) => { const { r, ws } = await byToken(req, res); if (r) res.send(V.uploadPage(ws, r)); }));
+app.post('/u/:token/files', express.raw({ type: '*/*', limit: '5mb' }), wrap(async (req, res) => {
+  const { r } = await byToken(req, res); if (!r) return;
+  const out = await attachFile(r, { name: req.query.name, mime: String(req.get('content-type') || ''), buffer: req.body, kind: req.query.kind }, 'supplier');
+  if (out.error) return res.status(415).json(out);
+  res.json({ ok: true, documents: r.documents.map((d) => ({ kind: d.kind, reference: d.reference, attached: !!d.fileId, fileName: d.fileName })) });
+}));
+
 // ---------- supplier app ----------
 const mine = (ws) => store.list('records', 'workspaceId', ws.id);
 app.get('/app', auth(), wrap(async (req, res) => res.send(V.dashboard(req.ws, await mine(req.ws)))));
@@ -131,15 +161,9 @@ app.post('/api/records/:id/payments', auth(true), wrap(async (req, res) => {
 }));
 app.post('/api/records/:id/files', auth(true), express.raw({ type: '*/*', limit: '5mb' }), wrap(async (req, res) => {
   const r = await own(req, res); if (!r) return;
-  const mime = String(req.get('content-type') || 'application/octet-stream');
-  if (!/^(image\/(png|jpeg|webp|gif)|application\/pdf)$/.test(mime)) return res.status(415).json({ error: 'Only PDF or image files' });
-  const f = { id: id(), workspaceId: req.ws.id, recordId: r.id, name: String(req.query.name || 'file').slice(0, 120), mime, data: req.body.toString('base64') };
-  await store.save('files', f);
-  const kind = String(req.query.kind || 'Other');
-  const doc = r.documents.find((d) => d.id === req.query.doc);
-  if (doc) { doc.fileId = f.id; doc.fileName = f.name; } else r.documents.push({ id: id(6), kind, reference: f.name, date: '', summary: 'Uploaded file', fileId: f.id, fileName: f.name });
-  log(r, 'supplier', `Attached ${f.name}`); r.updatedAt = new Date().toISOString();
-  await store.save('records', r); res.json(r);
+  const out = await attachFile(r, { name: req.query.name, mime: String(req.get('content-type') || ''), buffer: req.body, kind: req.query.kind, docId: req.query.doc }, 'supplier');
+  if (out.error) return res.status(415).json(out);
+  res.json(r);
 }));
 app.delete('/api/records/:id', auth(true), wrap(async (req, res) => {
   const r = await own(req, res); if (!r) return;
@@ -150,4 +174,5 @@ mountMcp(app, baseUrlOf);
 app.use((err, _q, res, _n) => { console.error(err); res.status(500).send('Something went wrong.'); });
 const port = Number(process.env.PORT) || 3000;
 await store.init(); await seedDemo();
+for (const r of await store.all('records')) if (!r.uploadToken) { r.uploadToken = id(12); await store.save('records', r); } // older records get an upload link
 app.listen(port, () => console.log(`ProofPay on http://localhost:${port}`));

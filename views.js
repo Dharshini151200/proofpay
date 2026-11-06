@@ -1,4 +1,4 @@
-import { inr, totals, dueInfo, checks, score } from './domain.js';
+import { inr, totals, dueInfo, checks, issues, score } from './domain.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const nl = (s) => esc(s).replace(/\n/g, '<br>');
@@ -62,7 +62,7 @@ export function row(r) {
   <span class="ttl"><b>${esc(r.buyer.name)}</b><small>Inv ${esc(r.invoiceNumber || '—')} · delivered ${fd(r.deliveryDate)}</small></span>
   <span class="by">${r.createdBy === 'claude' ? '<span class="claude">✦ Claude</span>' : 'You'}</span>
   <span>${badge(r.status)}</span>
-  <span><span class="proof ${sc === 100 ? 'ok' : sc >= 70 ? 'warn' : 'bad'}">${sc === 100 ? '✓ Proof complete' : `⚠ ${checks(r).length} issue${checks(r).length > 1 ? 's' : ''}`}</span></span>
+  <span><span class="proof ${sc === 100 ? 'ok' : sc >= 70 ? 'warn' : 'bad'}">${sc === 100 ? '✓ Proof complete' : `⚠ ${issues(r).length} issue${issues(r).length > 1 ? 's' : ''}`}</span></span>
   <span>${dueChip(r)}</span>
   <span class="amt">${inr(t.outstanding)}</span></a>`;
 }
@@ -105,7 +105,7 @@ export function editor(ws, r, base) {
   <div class="card"><h3>History</h3><ul class="timeline" id="activity"></ul></div>
   <div class="card"><button class="linkbtn danger" id="del">Delete record</button></div>
 </aside></div>
-<script>window.REC=${JSON.stringify(r).replace(/</g, '\\u003c')};</script><script src="/static/editor.js"></script>`, { ws, wide: true });
+<script>window.REC=${JSON.stringify(r).replace(/</g, '\\u003c')};window.UPLOAD=${JSON.stringify(`${base}/u/${r.uploadToken}`)};</script><script src="/static/editor.js"></script>`, { ws, wide: true });
 }
 
 export function settings(ws, base, saved) {
@@ -149,7 +149,7 @@ ${r.items.map((it) => `<tr><td><b>${esc(it.description)}</b>${it.unit ? ` <small
 </tbody></table>
 <ul class="checks">${c.map((x) => `<li class="${x.level}">${esc(x.text)}</li>`).join('')}</ul>
 <h3>Documents</h3>
-<table class="items docs"><tbody>${r.documents.map((doc) => `<tr><td><span class="kind">${esc(doc.kind)}</span></td><td><b>${esc(doc.reference || '—')}</b> <small class="muted">${fd(doc.date)}</small><br><small>${esc(doc.summary)}</small></td><td class="r">${doc.fileId && files[doc.fileId] ? `<a href="/f/${esc(doc.fileId)}?b=${esc(r.slug)}" target="_blank">View file</a>` : '<small class="muted">details only</small>'}</td></tr>`).join('') || '<tr><td class="muted">No documents yet</td></tr>'}</tbody></table>
+<table class="items docs"><tbody>${r.documents.map((doc) => `<tr><td><span class="kind">${esc(doc.kind)}</span></td><td><b>${esc(doc.reference || '—')}</b> <small class="muted">${fd(doc.date)}</small><br><small>${esc(doc.summary)}</small>${doc.transcript ? `<details class="tx"><summary>Text copy of this document</summary><pre>${esc(doc.transcript)}</pre></details>` : ''}</td><td class="r">${doc.fileId && files[doc.fileId] ? `<a href="/f/${esc(doc.fileId)}?b=${esc(r.slug)}" target="_blank">View file</a>` : '<small class="muted">original not attached</small>'}</td></tr>`).join('') || '<tr><td class="muted">No documents yet</td></tr>'}</tbody></table>
 ${r.receivedBy ? `<p class="small">POD signed by: <b>${esc(r.receivedBy)}</b></p>` : ''}
 ${r.dispute ? `<div class="done no"><h3>Query from buyer</h3><p>"${esc(r.dispute.reason)}"</p><p class="muted small">${esc(r.dispute.by)} · ${ft(r.dispute.at)}</p></div>` : ''}
 ${r.payments.length ? `<h3>Payments</h3><ul class="checks">${r.payments.map((x) => `<li class="ok">${inr(x.amount)} on ${fd(x.date)}${x.reference ? ` · ref ${esc(x.reference)}` : ''}</li>`).join('')}</ul>` : ''}
@@ -157,4 +157,19 @@ ${actions}
 <h3>History</h3><ul class="timeline">${[...r.activity].reverse().map((a) => `<li class="by-${a.by}">${esc(a.note)}<small>${a.by === 'buyer' ? 'Buyer' : a.by === 'claude' ? 'Supplier (via Claude)' : 'Supplier'} · ${ft(a.at)}</small></li>`).join('')}</ul>
 <p class="foot muted small no-print"><a href="javascript:print()">Download evidence pack (PDF)</a> · Powered by <a href="/">ProofPay</a></p>
 </main></body></html>`;
+}
+
+export function uploadPage(ws, r) {
+  const docs = r.documents.map((d) => `<li class="${d.fileId ? 'ok' : 'warn'}"><b>${esc(d.kind)}</b> ${esc(d.reference || '')} — ${d.fileId ? `attached (${esc(d.fileName)})` : 'waiting for original'}</li>`).join('');
+  return `${head(`Upload originals · ${r.poNumber}`)}<body class="public"><main class="paper">
+<p class="muted small">${esc(ws.profile.name)} · ProofPay</p>
+<h1>Add original files for ${esc(r.poNumber)}</h1>
+<p class="small">Buyer: <b>${esc(r.buyer.name)}</b>. Claude has already read these documents and saved their details. Attach the originals here, especially the <b>signed and stamped challan</b>, which is your strongest proof if payment is disputed.</p>
+<ul class="checks" id="docs">${docs || '<li class="warn">No documents yet</li>'}</ul>
+<label class="bigdrop" id="drop"><input type="file" id="files" multiple accept="image/*,application/pdf">
+<b>Tap to choose files or take a photo</b><span>or drag PDFs here — select the PO, challan and invoice together</span></label>
+<p class="saving" id="msg"></p>
+<p class="muted small">Each file is matched to its document by name (invoice, challan/POD, PO). PDF or photo, up to 5 MB each.</p>
+<script>window.UP=${JSON.stringify(`/u/${r.uploadToken}/files`)};</script><script src="/static/upload.js"></script>
+<p class="foot muted small">Powered by <a href="/">ProofPay</a></p></main></body></html>`;
 }

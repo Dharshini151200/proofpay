@@ -37,7 +37,10 @@
     if (!r.receivedBy) o.push(['warn', 'No receiver name/signature recorded on the POD']);
     const t = totals(), exp = Math.round(t.inv * (1 + (+r.gstRate || 0) / 100));
     if (num(r.invoiceAmount) != null && t.inv && Math.abs(exp - num(r.invoiceAmount)) > 1) o.push(['warn', `Invoice total ${inr(r.invoiceAmount)} ≠ line items + GST (${inr(exp)})`]);
-    return o.length ? o : [['ok', 'PO, delivery and invoice match — dispute-ready']];
+    const out = o.length ? o : [['ok', 'PO, delivery and invoice match — dispute-ready']];
+    const pod = r.documents.find((d) => d.kind === 'POD');
+    if (pod && !pod.fileId) out.push(['info', 'Original signed challan not attached yet. Add it with the upload link, since it is your strongest proof in a dispute']);
+    return out;
   }
 
   const f = (k, label, type = 'text', obj = r, attr = 'data-k') => `<label>${label}<input ${attr}="${k}" type="${type}" value="${esc(obj[k] ?? '')}"></label>`;
@@ -66,6 +69,8 @@
         <td><input data-g="summary" value="${esc(d.summary)}"></td>
         <td style="width:90px">${d.fileId ? `<a href="/f/${d.fileId}" target="_blank">View</a>` : `<label class="linkbtn" style="margin:0;color:var(--acc);cursor:pointer">Attach<input type="file" accept="image/*,application/pdf" data-up="${esc(d.id)}" style="display:none"></label>`}</td>
         <td><button class="x" data-act="deldoc">×</button></td></tr>`).join('')}</tbody></table>
+      ${r.documents.some((d) => d.transcript) ? `<h3 style="margin-top:16px;font-size:14px">Claude's text copy of each document</h3>${r.documents.map((d, i) => d.transcript !== undefined && d.transcript !== '' ? `<details class="tx" data-d="${i}"><summary>${esc(d.kind)} ${esc(d.reference)}</summary><textarea data-g="transcript" rows="8">${esc(d.transcript)}</textarea></details>` : '').join('')}` : ''}
+      <div class="uplink">📱 <b>Upload link</b> <code id="uplink">${esc(window.UPLOAD)}</code><button class="btn ghost sm" id="copyup">Copy</button></div>
       <div class="drop" id="drop">Drop the PO, challan and invoice here, several at once is fine (PDF or photo, up to 5 MB each), or <u>browse</u><input type="file" id="fileinp" multiple accept="image/*,application/pdf" style="display:none"></div>
       <label style="margin-top:14px">Notes<textarea data-k="notes" rows="2">${esc(r.notes)}</textarea></label>
       <p class="saving" id="saving"></p>`;
@@ -132,7 +137,7 @@
     if (el.dataset.k) r[el.dataset.k] = v;
     else if (el.dataset.b) r.buyer[el.dataset.b] = v;
     else if (el.dataset.f && tr) r.items[tr.dataset.i][el.dataset.f] = v;
-    else if (el.dataset.g && tr) r.documents[tr.dataset.d][el.dataset.g] = v;
+    else if (el.dataset.g && el.closest('[data-d]')) r.documents[el.closest('[data-d]').dataset.d][el.dataset.g] = v;
     else return;
     side(); soon();
   });
@@ -143,6 +148,7 @@
   document.addEventListener('click', async (e) => {
     const el = e.target, tr = el.closest('tr');
     if (el.id !== 'fileinp' && el.closest('#drop')) { $('#fileinp').click(); return; }
+    if (el.id === 'copyup') { await navigator.clipboard.writeText(window.UPLOAD).catch(() => prompt('Upload link', window.UPLOAD)); el.textContent = 'Copied ✓'; return; }
     if (el.id === 'additem') { r.items.push({ description: '', unit: '', qtyOrdered: null, qtyDelivered: null, qtyInvoiced: null, poRate: null, invoiceRate: null }); render(); return; }
     if (el.dataset.act === 'delitem') { r.items.splice(tr.dataset.i, 1); render(); save(); return; }
     if (el.dataset.act === 'deldoc') { r.documents.splice(tr.dataset.d, 1); render(); save(); return; }

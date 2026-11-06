@@ -16,6 +16,7 @@ const Item = z.object({
 const Doc = z.object({
   kind: z.enum(DOC_KINDS), reference: z.string().optional().describe('Document number, e.g. challan no.'),
   date: z.string().optional().describe('YYYY-MM-DD'), summary: z.string().optional().describe('One line on what this document shows, e.g. "Signed by R. Kumar, stores, 96 cartons received"'),
+  transcript: z.string().optional().describe('Faithful plain-text copy of the whole document exactly as you read it: header, parties, GSTINs, every line item with qty/rate/amount, totals, terms, remarks, and who signed/stamped it. Do not summarise or correct it.'),
 });
 const out = (o) => ({ content: [{ type: 'text', text: typeof o === 'string' ? o : JSON.stringify(o, null, 2) }] });
 
@@ -24,7 +25,9 @@ function buildServer(ws, base) {
     instructions: `ProofPay keeps dispute-ready delivery records for ${ws.profile?.name || 'this supplier'}, an MSME supplier. ` +
       'When the user shares a PO, delivery challan/POD or invoice (photo, PDF or text), read it carefully and call create_delivery_record (or update_delivery_record for an existing PO) with every line item and quantity. ' +
       'ProofPay itself runs the PO–delivery–invoice match, computes the legal payment due date (MSMED Act / Sec 43B(h): 45 days with a written agreement, else 15), and gives the buyer a link to confirm receipt and approve payment. ' +
-      'Always show the user the edit_url and buyer_link. For overdue records you can draft reminders or formal notices with add_followup.',
+      'For every document, include a transcript: a faithful text copy of the whole document as you read it. ' +
+      'You cannot send the original file itself, so always show the user the upload_link and tell them to open it to attach the original PDFs/photos (on a phone it can use the camera) — the original signed challan is the strongest proof in a dispute. ' +
+      'Also show the edit_url and buyer_link. For overdue records you can draft reminders or formal notices with add_followup.',
   });
 
   s.registerTool('get_supplier_profile', { title: 'Supplier profile & summary', description: 'Supplier details (GSTIN, Udyam/MSME number), known buyers, and totals: outstanding, overdue, disputed.', inputSchema: {} }, async () => {
@@ -58,7 +61,8 @@ function buildServer(ws, base) {
       deliveryDate: a.delivery_date, acceptedOn: a.delivery_date, receivedBy: a.received_by, writtenAgreement: a.written_agreement,
       agreedDays: a.agreed_payment_days, items: a.items, documents: a.documents, notes: a.notes, share: a.share_with_buyer,
     }, 'claude');
-    return out({ ...summary(r, base), due_rule: dueInfo(r).basis });
+    return out({ ...summary(r, base), due_rule: dueInfo(r).basis,
+      next_step: 'Tell the user: open upload_link to attach the original files (select all at once, or use the phone camera). Documents are already saved with your text copy.' });
   });
 
   s.registerTool('update_delivery_record', {
@@ -101,7 +105,7 @@ function buildServer(ws, base) {
     const r = await findByPo(ws, po_number);
     if (!r) return out(`No record for ${po_number}.`);
     return out({ ...summary(r, base), buyer: r.buyer, dates: { po: r.poDate, invoice: r.invoiceDate, delivered: r.deliveryDate }, received_by: r.receivedBy,
-      due_rule: dueInfo(r).basis, items: r.items, documents: r.documents.map(({ fileId, ...d }) => ({ ...d, file_attached: !!fileId })),
+      due_rule: dueInfo(r).basis, items: r.items, documents: r.documents.map(({ fileId, ...d }) => ({ ...d, original_file_attached: !!fileId })),
       checks: checks(r), totals: totals(r), buyer_query: r.dispute || null, payments: r.payments, followups: r.followups, history: r.activity });
   });
 
