@@ -26,7 +26,9 @@ function buildServer(ws, base) {
       'When the user shares a PO, delivery challan/POD or invoice (photo, PDF or text), read it carefully and call create_delivery_record (or update_delivery_record for an existing PO) with every line item and quantity. ' +
       'ProofPay itself runs the PO–delivery–invoice match, computes the legal payment due date (MSMED Act / Sec 43B(h): 45 days with a written agreement, else 15), and gives the buyer a link to confirm receipt and approve payment. ' +
       'For every document, include a transcript: a faithful text copy of the whole document as you read it. ' +
-      'You cannot send the original file itself, so always show the user the upload_link and tell them to open it to attach the original PDFs/photos (on a phone it can use the camera) — the original signed challan is the strongest proof in a dispute. ' +
+      'Then attach the original files yourself when you can run commands: for each file the user gave you, POST its raw bytes to `<upload_link>/files?name=<file name>&kind=<PO|Invoice|POD|E-way bill|GRN|Other>&ref=<document number>&by=claude` with the file\'s Content-Type (application/pdf, image/jpeg, image/png…; max 5 MB), e.g. `curl -sS -X POST -H "Content-Type: application/pdf" --data-binary @DC-921.pdf "<upload_link>/files?name=DC-921.pdf&kind=POD&ref=DC-921&by=claude"`. The reply lists which documents now have their original attached. ' +
+      'When the user attaches files for several POs at once, group them by the PO number printed on each document, then create or update one record per PO and upload its files. ' +
+      'Only if you cannot reach ProofPay to upload (no shell, or the request is refused), show the user the upload_link and ask them to attach the originals there — the original signed challan is the strongest proof in a dispute. ' +
       'Also show the edit_url and buyer_link. For overdue records you can draft reminders or formal notices with add_followup.',
   });
 
@@ -62,7 +64,7 @@ function buildServer(ws, base) {
       agreedDays: a.agreed_payment_days, items: a.items, documents: a.documents, notes: a.notes, share: a.share_with_buyer,
     }, 'claude');
     return out({ ...summary(r, base), due_rule: dueInfo(r).basis,
-      next_step: 'Tell the user: open upload_link to attach the original files (select all at once, or use the phone camera). Documents are already saved with your text copy.' });
+      next_step: 'Now upload each original file: POST its bytes to upload_link + "/files?name=…&kind=…&ref=<document number>&by=claude" (see server instructions). If you cannot reach ProofPay, give the user upload_link to attach them instead.' });
   });
 
   s.registerTool('update_delivery_record', {
